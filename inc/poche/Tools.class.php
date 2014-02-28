@@ -1,9 +1,9 @@
 <?php
 /**
- * poche, a read it later open source system
+ * wallabag, self hostable application allowing you to not miss any content anymore
  *
- * @category   poche
- * @author     Nicolas Lœuillet <support@inthepoche.com>
+ * @category   wallabag
+ * @author     Nicolas Lœuillet <nicolas@loeuillet.org>
  * @copyright  2013
  * @license    http://www.wtfpl.net/ see COPYING file
  */
@@ -41,20 +41,26 @@ class Tools
         $https = (!empty($_SERVER['HTTPS'])
                     && (strtolower($_SERVER['HTTPS']) == 'on'))
             || (isset($_SERVER["SERVER_PORT"])
-                    && $_SERVER["SERVER_PORT"] == '443'); // HTTPS detection.
+                    && $_SERVER["SERVER_PORT"] == '443') // HTTPS detection.
+            || (isset($_SERVER["SERVER_PORT"]) //Custom HTTPS port detection 
+                    && $_SERVER["SERVER_PORT"] == SSL_PORT)
+             || (isset($_SERVER['HTTP_X_FORWARDED_PROTO'])
+                    && $_SERVER['HTTP_X_FORWARDED_PROTO'] == 'https');
+
         $serverport = (!isset($_SERVER["SERVER_PORT"])
             || $_SERVER["SERVER_PORT"] == '80'
             || ($https && $_SERVER["SERVER_PORT"] == '443')
+            || ($https && $_SERVER["SERVER_PORT"]==SSL_PORT) //Custom HTTPS port detection
             ? '' : ':' . $_SERVER["SERVER_PORT"]);
 
         $scriptname = str_replace('/index.php', '/', $_SERVER["SCRIPT_NAME"]);
 
-        if (!isset($_SERVER["SERVER_NAME"])) {
+        if (!isset($_SERVER["HTTP_HOST"])) {
             return $scriptname;
         }
 
         return 'http' . ($https ? 's' : '') . '://'
-            . $_SERVER["SERVER_NAME"] . $serverport . $scriptname;
+            . $_SERVER["HTTP_HOST"] . $serverport . $scriptname;
     }
 
     public static function redirect($url = '')
@@ -84,28 +90,16 @@ class Tools
 
     public static function getTplFile($view)
     {
-        $tpl_file = 'home.twig';
-        switch ($view)
-        {
-            case 'install':
-                $tpl_file = 'install.twig';
-                break;
-            case 'import';
-                $tpl_file = 'import.twig';
-                break;
-            case 'export':
-                $tpl_file = 'export.twig';
-                break;
-            case 'config':
-                $tpl_file = 'config.twig';
-                break;
-            case 'view':
-                $tpl_file = 'view.twig';
-                break;
-            default:
-            break;
+        $views = array(
+            'install', 'import', 'export', 'config', 'tags',
+            'edit-tags', 'view', 'login', 'error'
+            );
+
+        if (in_array($view, $views)) {
+            return $view . '.twig';
         }
-        return $tpl_file;
+
+        return 'home.twig';
     }
 
     public static function getFile($url)
@@ -118,7 +112,9 @@ class Tools
             $curl = curl_init();
             curl_setopt($curl, CURLOPT_URL, $url);
             curl_setopt($curl, CURLOPT_TIMEOUT, $timeout);
-            curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+            if (!ini_get('open_basedir') && !ini_get('safe_mode')) {
+                curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+            }
             curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
             curl_setopt($curl, CURLOPT_HEADER, false);
 
@@ -228,24 +224,32 @@ class Tools
         return $minutes;
     }
 
+    public static function getDocLanguage($userlanguage) {
+        $lang = explode('.', $userlanguage);
+        return str_replace('_', '-', $lang[0]);
+    }
 
-    public static function createMyConfig()
+    public static function status($status_code)
     {
-        $myconfig_file = './inc/poche/myconfig.inc.php';
+        if (strpos(php_sapi_name(), 'apache') !== false) {
 
-        if (!is_writable('./inc/poche/')) {
-            self::logm('you don\'t have write access to create ./inc/poche/myconfig.inc.php');
-            die('You don\'t have write access to create ./inc/poche/myconfig.inc.php.');
+            header('HTTP/1.0 '.$status_code);
         }
+        else {
 
-        if (!file_exists($myconfig_file))
-        {
-            $fp = fopen($myconfig_file, 'w');
-            fwrite($fp, '<?php'."\r\n");
-            fwrite($fp, "define ('POCHE_VERSION', '1.0-beta4');" . "\r\n");
-            fwrite($fp, "define ('SALT', '" . md5(time() . $_SERVER['SCRIPT_FILENAME'] . rand()) . "');" . "\r\n");
-            fwrite($fp, "define ('LANG', 'en_EN.utf8');" . "\r\n");
-            fclose($fp);
+            header('Status: '.$status_code);
         }
+    }
+
+
+    public static function download_db() {
+        header('Content-Disposition: attachment; filename="poche.sqlite.gz"');
+        self::status(200);
+
+        header('Content-Transfer-Encoding: binary');
+        header('Content-Type: application/octet-stream');
+        echo gzencode(file_get_contents(STORAGE_SQLITE));
+
+        exit;
     }
 }

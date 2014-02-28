@@ -1,104 +1,71 @@
 <?php
 /**
- * poche, a read it later open source system
+ * wallabag, self hostable application allowing you to not miss any content anymore
  *
- * @category   poche
- * @author     Nicolas Lœuillet <support@inthepoche.com>
+ * @category   wallabag
+ * @author     Nicolas Lœuillet <nicolas@loeuillet.org>
  * @copyright  2013
  * @license    http://www.wtfpl.net/ see COPYING file
  */
 
 class Poche
 {
+    public static $canRenderTemplates = true;
+    public static $configFileAvailable = true;
+
     public $user;
     public $store;
     public $tpl;
     public $messages;
     public $pagination;
+    
+    private $currentTheme = '';
+    private $currentLanguage = '';
+    private $notInstalledMessage = array();
 
-    function __construct()
+    private $language_names = array(
+      'cs_CZ.utf8' => 'čeština',
+      'de_DE.utf8' => 'German',
+      'en_EN.utf8' => 'English',
+      'es_ES.utf8' => 'Español',
+      'fa_IR.utf8' => 'فارسی',
+      'fr_FR.utf8' => 'Français',
+      'it_IT.utf8' => 'Italiano',
+      'pl_PL.utf8' => 'Polski',
+      'ru_RU.utf8' => 'Pусский',
+      'sl_SI.utf8' => 'Slovenščina',
+      'uk_UA.utf8' => 'Український',
+    );
+    public function __construct()
     {
-        $this->initTpl();
-        if (!$this->checkBeforeInstall()) {
-            exit;
-        }
-        $this->store = new Database();
-        $this->init();
-        $this->messages = new Messages();
-
-        # installation
-        if(!$this->store->isInstalled())
-        {
-            $this->install();
-        }
-    }
-
-    /**
-     * all checks before installation.
-     * @return boolean 
-     */
-    private function checkBeforeInstall()
-    {
-        $msg = '';
-        $allIsGood = TRUE;
-
-        if (!is_writable(CACHE)) {
-            Tools::logm('you don\'t have write access on cache directory');
-            die('You don\'t have write access on cache directory.');
-        }
-        else if (file_exists('./install/update.php') && !DEBUG_POCHE) {
-            $msg = '<h1>setup</h1><p><strong>It\'s your first time here?</strong> Please copy /install/poche.sqlite in db folder. Then, delete install folder.<br /><strong>If you have already installed poche</strong>, an update is needed <a href="install/update.php">by clicking here</a>.</p>';
-            $allIsGood = FALSE;
-        }
-        else if (file_exists('./install') && !DEBUG_POCHE) {
-            $msg = '<h1>setup</h1><p><strong>If you want to update your poche</strong>, you just have to delete /install folder. <br /><strong>To install your poche with sqlite</strong>, copy /install/poche.sqlite in /db and delete the folder /install. you have to delete the /install folder before using poche.</p>';
-            $allIsGood = FALSE;
-        }
-        else if (STORAGE == 'sqlite' && !is_writable(STORAGE_SQLITE)) {
-            Tools::logm('you don\'t have write access on sqlite file');
-            $msg = '<h1>error</h1><p>You don\'t have write access on sqlite file.</p>';
-            $allIsGood = FALSE;
+        if ($this->configFileIsAvailable()) {
+            $this->init();
         }
         
-        if (!$allIsGood) {
-            echo $this->tpl->render('error.twig', array(
-                'msg' => $msg
-            ));
+        if ($this->themeIsInstalled()) {
+            $this->initTpl();
         }
-
-        return $allIsGood;
+        
+        if ($this->systemIsInstalled()) {
+            $this->store = new Database();
+            $this->messages = new Messages();
+            # installation
+            if (! $this->store->isInstalled()) {
+                $this->install();
+            }
+            $this->store->checkTags();
+        }
     }
-
-    private function initTpl()
-    {
-        # template engine
-        $loader = new Twig_Loader_Filesystem(TPL);
-        if (DEBUG_POCHE) {
-            $twig_params = array();
-        }
-        else {
-            $twig_params = array('cache' => CACHE);
-        }
-        $this->tpl = new Twig_Environment($loader, $twig_params);
-        $this->tpl->addExtension(new Twig_Extensions_Extension_I18n());
-        # filter to display domain name of an url
-        $filter = new Twig_SimpleFilter('getDomain', 'Tools::getDomain');
-        $this->tpl->addFilter($filter);
-
-        # filter for reading time
-        $filter = new Twig_SimpleFilter('getReadingTime', 'Tools::getReadingTime');
-        $this->tpl->addFilter($filter);
-    }
-
+    
     private function init() 
     {
         Tools::initPhp();
+        Session::$sessionName = 'poche'; 
         Session::init();
 
         if (isset($_SESSION['poche_user']) && $_SESSION['poche_user'] != array()) {
             $this->user = $_SESSION['poche_user'];
-        }
-        else {
+        } else {
             # fake user, just for install & login screens
             $this->user = new User();
             $this->user->setConfig($this->getDefaultConfig());
@@ -113,13 +80,176 @@ class Poche
 
         # Pagination
         $this->pagination = new Paginator($this->user->getConfigValue('pager'), 'p');
+        
+        # Set up theme
+        $themeDirectory = $this->user->getConfigValue('theme');
+        
+        if ($themeDirectory === false) {
+            $themeDirectory = DEFAULT_THEME;
+        }
+        
+        $this->currentTheme = $themeDirectory;
+
+        # Set up language
+        $languageDirectory = $this->user->getConfigValue('language');
+        
+        if ($languageDirectory === false) {
+            $languageDirectory = DEFAULT_THEME;
+        }
+        
+        $this->currentLanguage = $languageDirectory;
     }
 
-    private function install() 
+    public function configFileIsAvailable() {
+        if (! self::$configFileAvailable) {
+            $this->notInstalledMessage[] = 'You have to rename inc/poche/config.inc.php.new to inc/poche/config.inc.php.';
+
+            return false;
+        }
+
+        return true;
+    }
+    
+    public function themeIsInstalled() {
+        $passTheme = TRUE;
+        # Twig is an absolute requirement for Poche to function. Abort immediately if the Composer installer hasn't been run yet
+        if (! self::$canRenderTemplates) {
+            $this->notInstalledMessage[] = 'Twig does not seem to be installed. Please initialize the Composer installation to automatically fetch dependencies. You can also download <a href="http://wllbg.org/vendor">vendor.zip</a> and extract it in your wallabag folder.';
+            $passTheme = FALSE;
+        }
+
+        if (! is_writable(CACHE)) {
+            $this->notInstalledMessage[] = 'You don\'t have write access on cache directory.';
+
+            self::$canRenderTemplates = false;
+
+            $passTheme = FALSE;
+        } 
+        
+        # Check if the selected theme and its requirements are present
+        $theme = $this->getTheme();
+
+        if ($theme != '' && ! is_dir(THEME . '/' . $theme)) {
+            $this->notInstalledMessage[] = 'The currently selected theme (' . $theme . ') does not seem to be properly installed (Missing directory: ' . THEME . '/' . $theme . ')';
+            
+            self::$canRenderTemplates = false;
+            
+            $passTheme = FALSE;
+        }
+        
+        $themeInfo = $this->getThemeInfo($theme);
+        if (isset($themeInfo['requirements']) && is_array($themeInfo['requirements'])) {
+            foreach ($themeInfo['requirements'] as $requiredTheme) {
+                if (! is_dir(THEME . '/' . $requiredTheme)) {
+                    $this->notInstalledMessage[] = 'The required "' . $requiredTheme . '" theme is missing for the current theme (' . $theme . ')';
+                
+                    self::$canRenderTemplates = false;
+                
+                    $passTheme = FALSE;
+                }
+            }
+        }
+
+        if (!$passTheme) {
+            return FALSE;
+        }
+
+        
+        return true;
+    }
+    
+    /**
+     * all checks before installation.
+     * @todo move HTML to template
+     * @return boolean 
+     */
+    public function systemIsInstalled()
+    {
+        $msg = TRUE;
+        
+        $configSalt = defined('SALT') ? constant('SALT') : '';
+        
+        if (empty($configSalt)) {
+            $this->notInstalledMessage[] = 'You have not yet filled in the SALT value in the config.inc.php file.';
+            $msg = FALSE;
+        }
+        if (STORAGE == 'sqlite' && ! file_exists(STORAGE_SQLITE)) {
+            Tools::logm('sqlite file doesn\'t exist');
+            $this->notInstalledMessage[] = 'sqlite file doesn\'t exist, you can find it in install folder. Copy it in /db folder.';
+            $msg = FALSE;
+        }
+        if (is_dir(ROOT . '/install') && ! DEBUG_POCHE) {
+            $this->notInstalledMessage[] = 'you have to delete the /install folder before using poche.';
+            $msg = FALSE;
+        }
+        if (STORAGE == 'sqlite' && ! is_writable(STORAGE_SQLITE)) {
+            Tools::logm('you don\'t have write access on sqlite file');
+            $this->notInstalledMessage[] = 'You don\'t have write access on sqlite file.';
+            $msg = FALSE;
+        }
+
+        if (! $msg) {
+            return false;
+        }
+
+        return true;
+    }
+    
+    public function getNotInstalledMessage() {
+        return $this->notInstalledMessage;
+    }
+
+    private function initTpl()
+    {
+        $loaderChain = new Twig_Loader_Chain();
+        $theme = $this->getTheme();
+       
+        # add the current theme as first to the loader chain so Twig will look there first for overridden template files
+        try {
+            $loaderChain->addLoader(new Twig_Loader_Filesystem(THEME . '/' . $theme));
+        } catch (Twig_Error_Loader $e) {
+            # @todo isInstalled() should catch this, inject Twig later
+            die('The currently selected theme (' . $theme . ') does not seem to be properly installed (' . THEME . '/' . $theme .' is missing)');
+        }
+        
+        # add all required themes to the loader chain
+        $themeInfo = $this->getThemeInfo($theme);
+        if (isset($themeInfo['requirements']) && is_array($themeInfo['requirements'])) {
+            foreach ($themeInfo['requirements'] as $requiredTheme) {
+                try {
+                    $loaderChain->addLoader(new Twig_Loader_Filesystem(THEME . '/' . $requiredTheme));
+                } catch (Twig_Error_Loader $e) {
+                    # @todo isInstalled() should catch this, inject Twig later
+                    die('The required "' . $requiredTheme . '" theme is missing for the current theme (' . $theme . ')');
+                }
+            }
+        }
+        
+        if (DEBUG_POCHE) {
+            $twigParams = array();
+        } else {
+            $twigParams = array('cache' => CACHE);
+        }
+        
+        $this->tpl = new Twig_Environment($loaderChain, $twigParams);
+        $this->tpl->addExtension(new Twig_Extensions_Extension_I18n());
+        
+        # filter to display domain name of an url
+        $filter = new Twig_SimpleFilter('getDomain', 'Tools::getDomain');
+        $this->tpl->addFilter($filter);
+
+        # filter for reading time
+        $filter = new Twig_SimpleFilter('getReadingTime', 'Tools::getReadingTime');
+        $this->tpl->addFilter($filter);
+    }
+
+    private function install()
     {
         Tools::logm('poche still not installed');
         echo $this->tpl->render('install.twig', array(
-            'token' => Session::getToken()
+            'token' => Session::getToken(),
+            'theme' => $this->getTheme(),
+            'poche_url' => Tools::getPocheUrl()
         ));
         if (isset($_GET['install'])) {
             if (($_POST['password'] == $_POST['password_repeat']) 
@@ -139,26 +269,176 @@ class Poche
         }
         exit();
     }
+    
+    public function getTheme() {
+        return $this->currentTheme;
+    }
+
+    /**
+     * Provides theme information by parsing theme.ini file if present in the theme's root directory.
+     * In all cases, the following data will be returned:
+     * - name: theme's name, or key if the theme is unnamed,
+     * - current: boolean informing if the theme is the current user theme.
+     *
+     * @param string $theme Theme key (directory name)
+     * @return array|boolean Theme information, or false if the theme doesn't exist.
+     */
+    public function getThemeInfo($theme) {
+        if (!is_dir(THEME . '/' . $theme)) {
+            return false;
+        }
+
+        $themeIniFile = THEME . '/' . $theme . '/theme.ini';
+        $themeInfo = array();
+
+        if (is_file($themeIniFile) && is_readable($themeIniFile)) {
+            $themeInfo = parse_ini_file($themeIniFile);
+        }
+        
+        if ($themeInfo === false) {
+            $themeInfo = array();
+        }
+        if (!isset($themeInfo['name'])) {
+            $themeInfo['name'] = $theme;
+        }
+        $themeInfo['current'] = ($theme === $this->getTheme());
+
+        return $themeInfo;
+    }
+    
+    public function getInstalledThemes() {
+        $handle = opendir(THEME);
+        $themes = array();
+
+        while (($theme = readdir($handle)) !== false) {
+            # Themes are stored in a directory, so all directory names are themes
+            # @todo move theme installation data to database
+            if (!is_dir(THEME . '/' . $theme) || in_array($theme, array('.', '..'))) {
+                continue;
+            }
+
+            $themes[$theme] = $this->getThemeInfo($theme);
+        }
+
+        ksort($themes);
+
+        return $themes;
+    }
+
+    public function getLanguage() {
+        return $this->currentLanguage;
+    }
+
+    public function getInstalledLanguages() {
+        $handle = opendir(LOCALE);
+        $languages = array();
+        
+        while (($language = readdir($handle)) !== false) {
+            # Languages are stored in a directory, so all directory names are languages
+            # @todo move language installation data to database
+            if (! is_dir(LOCALE . '/' . $language) || in_array($language, array('..', '.'))) {
+                continue;
+            }
+            
+            $current = false;
+            
+            if ($language === $this->getLanguage()) {
+                $current = true;
+            }
+            
+            $languages[] = array('name' => $this->language_names[$language], 'value' => $language, 'current' => $current);
+        }
+        
+        return $languages;
+    }
 
     public function getDefaultConfig()
-    {
+    {   
         return array(
             'pager' => PAGINATION,
             'language' => LANG,
+            'theme' => DEFAULT_THEME
+        );
+    }
+
+    protected function getPageContent(Url $url)
+    {
+        // Saving and clearing context
+        $REAL = array();
+        foreach( $GLOBALS as $key => $value ) {
+            if( $key != "GLOBALS" && $key != "_SESSION" ) {
+                $GLOBALS[$key] = array();
+                $REAL[$key] = $value;
+            }
+        }
+        // Saving and clearing session
+        $REAL_SESSION = array();
+        foreach( $_SESSION as $key => $value ) {
+            $REAL_SESSION[$key] = $value;
+            unset($_SESSION[$key]);
+        }
+
+        // Running code in different context
+        $scope = function() {
+            extract( func_get_arg(1) );
+            $_GET = $_REQUEST = array(
+                        "url" => $url->getUrl(),
+                        "max" => 5,
+                        "links" => "preserve",
+                        "exc" => "",
+                        "format" => "json",
+                        "submit" => "Create Feed"
             );
+            ob_start();
+            require func_get_arg(0);
+            $json = ob_get_flush();
+            return $json;
+        };
+        $json = $scope( "inc/3rdparty/makefulltextfeed.php", array("url" => $url) );
+
+        // Clearing and restoring context
+        foreach( $GLOBALS as $key => $value ) {
+            if( $key != "GLOBALS" && $key != "_SESSION" ) {
+                unset($GLOBALS[$key]);
+            }
+        }
+        foreach( $REAL as $key => $value ) {
+            $GLOBALS[$key] = $value;
+        }
+        // Clearing and restoring session
+        foreach( $_SESSION as $key => $value ) {
+            unset($_SESSION[$key]);
+        }
+        foreach( $REAL_SESSION as $key => $value ) {
+            $_SESSION[$key] = $value;
+        }
+        return json_decode($json, true);
     }
 
     /**
      * Call action (mark as fav, archive, delete, etc.)
      */
-    public function action($action, Url $url, $id = 0, $import = FALSE)
+    public function action($action, Url $url, $id = 0, $import = FALSE, $autoclose = FALSE, $tags = null)
     {
         switch ($action)
         {
             case 'add':
-                $content = $url->extract();
+                $content = $this->getPageContent($url);
+                $title = ($content['rss']['channel']['item']['title'] != '') ? $content['rss']['channel']['item']['title'] : _('Untitled');
+                $body = $content['rss']['channel']['item']['description'];
 
-                if ($this->store->add($url->getUrl(), $content['title'], $content['body'], $this->user->getId())) {
+                // clean content from prevent xss attack
+                $config = HTMLPurifier_Config::createDefault();
+                $purifier = new HTMLPurifier($config);
+                $title = $purifier->purify($title);
+                $body = $purifier->purify($body);
+
+                //search for possible duplicate if not in import mode
+                if (!$import) {
+                    $duplicate = $this->store->retrieveOneByURL($url->getUrl(), $this->user->getId());
+                }
+
+                if ($this->store->add($url->getUrl(), $title, $body, $this->user->getId())) {
                     Tools::logm('add link ' . $url->getUrl());
                     $sequence = '';
                     if (STORAGE == 'postgres') {
@@ -166,10 +446,24 @@ class Poche
                     }
                     $last_id = $this->store->getLastId($sequence);
                     if (DOWNLOAD_PICTURES) {
-                        $content = filtre_picture($parametres_url['body'], $url->getUrl(), $last_id);
+                        $content = filtre_picture($body, $url->getUrl(), $last_id);
                         Tools::logm('updating content article');
                         $this->store->updateContent($last_id, $content, $this->user->getId());
                     }
+
+                    if ($duplicate != NULL) {
+                        // duplicate exists, so, older entry needs to be deleted (as new entry should go to the top of list), BUT favorite mark and tags should be preserved
+                        Tools::logm('link ' . $url->getUrl() . ' is a duplicate');
+                        // 1) - preserve tags and favorite, then drop old entry
+                        $this->store->reassignTags($duplicate['id'], $last_id);
+                        if ($duplicate['is_fav']) {
+                          $this->store->favoriteById($last_id, $this->user->getId());
+                        }
+                        if ($this->store->deleteById($duplicate['id'], $this->user->getId())) {
+                          Tools::logm('previous link ' . $url->getUrl() .' entry deleted');
+                        }
+                    }
+
                     if (!$import) {
                         $this->messages->add('s', _('the link has been added successfully'));
                     }
@@ -182,7 +476,11 @@ class Poche
                 }
 
                 if (!$import) {
-                    Tools::redirect();
+                    if ($autoclose == TRUE) {
+                      Tools::redirect('?view=home');
+                    } else {
+                      Tools::redirect('?view=home&closewin=true');
+                    }
                 }
                 break;
             case 'delete':
@@ -214,6 +512,63 @@ class Poche
                     Tools::redirect();
                 }
                 break;
+            case 'archive_all' :
+                $this->store->archiveAll($this->user->getId());
+                Tools::logm('archive all links');
+                if (!$import) {
+                    Tools::redirect();
+                }
+                break;
+            case 'add_tag' :
+                if($import){
+                    $entry_id = $id;
+                    $tags = explode(',', $tags);
+                }
+                else{
+                    $tags = explode(',', $_POST['value']);
+                    $entry_id = $_POST['entry_id'];
+                }
+                $entry = $this->store->retrieveOneById($entry_id, $this->user->getId());
+                if (!$entry) {
+                    $this->messages->add('e', _('Article not found!'));
+                    Tools::logm('error : article not found');
+                    Tools::redirect();
+                }
+                foreach($tags as $key => $tag_value) {
+                    $value = trim($tag_value);
+                    $tag = $this->store->retrieveTagByValue($value);
+
+                    if (is_null($tag)) {
+                        # we create the tag
+                        $tag = $this->store->createTag($value);
+                        $sequence = '';
+                        if (STORAGE == 'postgres') {
+                            $sequence = 'tags_id_seq';
+                        }
+                        $tag_id = $this->store->getLastId($sequence);
+                    }
+                    else {
+                        $tag_id = $tag['id'];
+                    }
+
+                    # we assign the tag to the article
+                    $this->store->setTagToEntry($tag_id, $entry_id);
+                }
+                if(!$import) {
+                    Tools::redirect();
+                }
+                break;
+            case 'remove_tag' :
+                $tag_id = $_GET['tag_id'];
+                $entry = $this->store->retrieveOneById($id, $this->user->getId());
+                if (!$entry) {
+                    $this->messages->add('e', _('Article not found!'));
+                    Tools::logm('error : article not found');
+                    Tools::redirect();
+                }
+                $this->store->removeTagForEntry($id, $tag_id);
+                Tools::redirect();
+                break;
             default:
                 break;
         }
@@ -226,17 +581,50 @@ class Poche
         switch ($view)
         {
             case 'config':
-                $dev = $this->getPocheVersion('dev');
-                $prod = $this->getPocheVersion('prod');
-                $compare_dev = version_compare(POCHE_VERSION, $dev);
-                $compare_prod = version_compare(POCHE_VERSION, $prod);
+                $dev = trim($this->getPocheVersion('dev'));
+                $prod = trim($this->getPocheVersion('prod'));
+                $compare_dev = version_compare(POCHE, $dev);
+                $compare_prod = version_compare(POCHE, $prod);
+                $themes = $this->getInstalledThemes();
+                $languages = $this->getInstalledLanguages();
+                $token = $this->user->getConfigValue('token');
+                $http_auth = (isset($_SERVER['PHP_AUTH_USER']) || isset($_SERVER['REMOTE_USER'])) ? true : false;
                 $tpl_vars = array(
+                    'themes' => $themes,
+                    'languages' => $languages,
                     'dev' => $dev,
                     'prod' => $prod,
                     'compare_dev' => $compare_dev,
                     'compare_prod' => $compare_prod,
+                    'token' => $token,
+                    'user_id' => $this->user->getId(),
+                    'http_auth' => $http_auth,
                 );
                 Tools::logm('config view');
+                break;
+            case 'edit-tags':
+                # tags
+                $entry = $this->store->retrieveOneById($id, $this->user->getId());
+                if (!$entry) {
+                    $this->messages->add('e', _('Article not found!'));
+                    Tools::logm('error : article not found');
+                    Tools::redirect();
+                }
+                $tags = $this->store->retrieveTagsByEntry($id);
+                $tpl_vars = array(
+                    'entry_id' => $id,
+                    'tags' => $tags,
+                    'entry' => $entry,
+                );
+                break;
+            case 'tags':
+                $token = $this->user->getConfigValue('token');
+                $tags = $this->store->retrieveAllTags($this->user->getId());
+                $tpl_vars = array(
+                    'token' => $token,
+                    'user_id' => $this->user->getId(),
+                    'tags' => $tags,
+                );
                 break;
             case 'view':
                 $entry = $this->store->retrieveOneById($id, $this->user->getId());
@@ -248,24 +636,48 @@ class Poche
                         $tidy->cleanRepair();
                         $content = $tidy->value;
                     }
+
+                    # flattr checking
+                    $flattr = new FlattrItem();
+                    $flattr->checkItem($entry['url'], $entry['id']);
+
+                    # tags
+                    $tags = $this->store->retrieveTagsByEntry($entry['id']);
+
                     $tpl_vars = array(
                         'entry' => $entry,
                         'content' => $content,
+                        'flattr' => $flattr,
+                        'tags' => $tags
                     );
                 }
                 else {
                     Tools::logm('error in view call : entry is null');
                 }
                 break;
-            default: # home view
-                $entries = $this->store->getEntriesByView($view, $this->user->getId());
-                $this->pagination->set_total(count($entries));
-                $page_links = $this->pagination->page_links('?view=' . $view . '&sort=' . $_SESSION['sort'] . '&');
-                $datas = $this->store->getEntriesByView($view, $this->user->getId(), $this->pagination->get_limit());
+            default: # home, favorites, archive and tag views
                 $tpl_vars = array(
-                    'entries' => $datas,
-                    'page_links' => $page_links,
+                    'entries' => '',
+                    'page_links' => '',
+                    'nb_results' => '',
                 );
+                
+                //if id is given - we retrive entries by tag: id is tag id
+                if ($id) {
+                  $tpl_vars['tag'] = $this->store->retrieveTag($id, $this->user->getId());
+                  $tpl_vars['id'] = intval($id);
+                }
+
+                $count = $this->store->getEntriesByViewCount($view, $this->user->getId(), $id);
+
+                if ($count > 0) {
+                    $this->pagination->set_total($count);
+                    $page_links = str_replace(array('previous', 'next'), array(_('previous'), _('next')),
+                        $this->pagination->page_links('?view=' . $view . '&sort=' . $_SESSION['sort'] . (($id)?'&id='.$id:'') . '&' ));
+                    $tpl_vars['entries'] = $this->store->getEntriesByView($view, $this->user->getId(), $this->pagination->get_limit(), $id);
+                    $tpl_vars['page_links'] = $page_links;
+                    $tpl_vars['nb_results'] = $count;
+                }
                 Tools::logm('display ' . $view . ' view');
                 break;
         }
@@ -303,6 +715,101 @@ class Poche
             }
         }
     }
+    
+    public function updateTheme()
+    {
+        # no data
+        if (empty($_POST['theme'])) {
+        }
+        
+        # we are not going to change it to the current theme...
+        if ($_POST['theme'] == $this->getTheme()) {
+            $this->messages->add('w', _('still using the "' . $this->getTheme() . '" theme!'));
+            Tools::redirect('?view=config');
+        }
+        
+        $themes = $this->getInstalledThemes();
+        $actualTheme = false;
+        
+        foreach (array_keys($themes) as $theme) {
+            if ($theme == $_POST['theme']) {
+                $actualTheme = true;
+                break;
+            }
+        }
+        
+        if (! $actualTheme) {
+            $this->messages->add('e', _('that theme does not seem to be installed'));
+            Tools::redirect('?view=config');
+        }
+        
+        $this->store->updateUserConfig($this->user->getId(), 'theme', $_POST['theme']);
+        $this->messages->add('s', _('you have changed your theme preferences'));
+        
+        $currentConfig = $_SESSION['poche_user']->config;
+        $currentConfig['theme'] = $_POST['theme'];
+        
+        $_SESSION['poche_user']->setConfig($currentConfig);
+        
+        Tools::redirect('?view=config');
+    }
+
+    public function updateLanguage()
+    {
+        # no data
+        if (empty($_POST['language'])) {
+        }
+        
+        # we are not going to change it to the current language...
+        if ($_POST['language'] == $this->getLanguage()) {
+            $this->messages->add('w', _('still using the "' . $this->getLanguage() . '" language!'));
+            Tools::redirect('?view=config');
+        }
+        
+        $languages = $this->getInstalledLanguages();
+        $actualLanguage = false;
+        
+        foreach ($languages as $language) {
+            if ($language['value'] == $_POST['language']) {
+                $actualLanguage = true;
+                break;
+            }
+        }
+        
+        if (! $actualLanguage) {
+            $this->messages->add('e', _('that language does not seem to be installed'));
+            Tools::redirect('?view=config');
+        }
+        
+        $this->store->updateUserConfig($this->user->getId(), 'language', $_POST['language']);
+        $this->messages->add('s', _('you have changed your language preferences'));
+        
+        $currentConfig = $_SESSION['poche_user']->config;
+        $currentConfig['language'] = $_POST['language'];
+        
+        $_SESSION['poche_user']->setConfig($currentConfig);
+        
+        Tools::redirect('?view=config');
+    }
+
+    /**
+     * get credentials from differents sources
+     * it redirects the user to the $referer link
+     * @return array
+     */
+    private function credentials() {
+        if(isset($_SERVER['PHP_AUTH_USER'])) {
+            return array($_SERVER['PHP_AUTH_USER'],'php_auth',true);
+        }
+        if(!empty($_POST['login']) && !empty($_POST['password'])) {
+            return array($_POST['login'],$_POST['password'],false);
+        }
+        if(isset($_SERVER['REMOTE_USER'])) {
+            return array($_SERVER['REMOTE_USER'],'http_auth',true);
+        }
+
+        return array(false,false,false);
+    }
 
     /**
      * checks if login & password are correct and save the user in session.
@@ -313,29 +820,24 @@ class Poche
      */
     public function login($referer)
     {
-        if (!empty($_POST['login']) && !empty($_POST['password'])) {
-            $user = $this->store->login($_POST['login'], Tools::encodeString($_POST['password'] . $_POST['login']));
+        list($login,$password,$isauthenticated)=$this->credentials();
+        if($login === false || $password === false) {
+            $this->messages->add('e', _('login failed: you have to fill all fields'));
+            Tools::logm('login failed');
+            Tools::redirect();
+        }
+        if (!empty($login) && !empty($password)) {
+            $user = $this->store->login($login, Tools::encodeString($password . $login), $isauthenticated);
             if ($user != array()) {
                 # Save login into Session
-                Session::login($user['username'], $user['password'], $_POST['login'], Tools::encodeString($_POST['password'] . $_POST['login']), array('poche_user' => new User($user)));
-
-                $this->messages->add('s', _('welcome to your poche'));
-                if (!empty($_POST['longlastingsession'])) {
-                    $_SESSION['longlastingsession'] = 31536000;
-                    $_SESSION['expires_on'] = time() + $_SESSION['longlastingsession'];
-                    session_set_cookie_params($_SESSION['longlastingsession']);
-                } else {
-                    session_set_cookie_params(0);
-                }
-                session_regenerate_id(true);
+                $longlastingsession = isset($_POST['longlastingsession']);
+                $passwordTest = ($isauthenticated) ? $user['password'] : Tools::encodeString($password . $login);
+                Session::login($user['username'], $user['password'], $login, $passwordTest, $longlastingsession, array('poche_user' => new User($user)));
+                $this->messages->add('s', _('welcome to your wallabag'));
                 Tools::logm('login successful');
                 Tools::redirect($referer);
             }
             $this->messages->add('e', _('login failed: bad login or password'));
-            Tools::logm('login failed');
-            Tools::redirect();
-        } else {
-            $this->messages->add('e', _('login failed: you have to fill all fields'));
             Tools::logm('login failed');
             Tools::redirect();
         }
@@ -350,7 +852,6 @@ class Poche
     {
         $this->user = array();
         Session::logout();
-        $this->messages->add('s', _('see you soon!'));
         Tools::logm('logout');
         Tools::redirect();
     }
@@ -417,13 +918,17 @@ class Poche
                 $a = $li->find('a');
                 $url = new Url(base64_encode($a[0]->href));
                 $this->action('add', $url, 0, TRUE);
+                $sequence = '';
+                if (STORAGE == 'postgres') {
+                    $sequence = 'entries_id_seq';
+                }
+                $last_id = $this->store->getLastId($sequence);
                 if ($read == '1') {
-                        $sequence = '';
-                        if (STORAGE == 'postgres') {
-                            $sequence = 'entries_id_seq';
-                        }
-                    $last_id = $this->store->getLastId($sequence);
                     $this->action('toggle_archive', $url, $last_id, TRUE);
+                }
+                $tags = $a[0]->tags;
+                if(!empty($tags)) {
+                    $this->action('add_tag',$url,$last_id,true,false,$tags);
                 }
             }
             
@@ -452,26 +957,74 @@ class Poche
             $url = NULL;
             $favorite = FALSE;
             $archive = FALSE;
-            foreach ($value as $attr => $attr_value) {
-                if ($attr == 'article__url') {
-                    $url = new Url(base64_encode($attr_value));
-                }
-                $sequence = '';
-                if (STORAGE == 'postgres') {
-                    $sequence = 'entries_id_seq';
-                }
-                if ($attr_value == 'true') {
-                    if ($attr == 'favorite') {
-                        $favorite = TRUE;
+            foreach ($value as $item) {
+                foreach ($item as $attr => $value) {
+                    if ($attr == 'article__url') {
+                        $url = new Url(base64_encode($value));
                     }
-                    if ($attr == 'archive') {
-                        $archive = TRUE;
+                    $sequence = '';
+                    if (STORAGE == 'postgres') {
+                        $sequence = 'entries_id_seq';
+                    }
+                    if ($value == 'true') {
+                        if ($attr == 'favorite') {
+                            $favorite = TRUE;
+                        }
+                        if ($attr == 'archive') {
+                            $archive = TRUE;
+                        }
+                    }
+                }
+
+                # we can add the url
+                if (!is_null($url) && $url->isCorrect()) {
+                    $this->action('add', $url, 0, TRUE);
+                    $count++;
+                    if ($favorite) {
+                        $last_id = $this->store->getLastId($sequence);
+                        $this->action('toggle_fav', $url, $last_id, TRUE);
+                    }
+                    if ($archive) {
+                        $last_id = $this->store->getLastId($sequence);
+                        $this->action('toggle_archive', $url, $last_id, TRUE);
                     }
                 }
             }
+        }
+        $this->messages->add('s', _('import from Readability completed. ' . $count . ' new links.'));
+        Tools::logm('import from Readability completed');
+        Tools::redirect();
+    }
+
+    /**
+     * import from Poche exported file
+     * @param string $targetFile the file used for importing
+     * @return boolean 
+     */
+    private function importFromPoche($targetFile)
+    {
+        $str_data = file_get_contents($targetFile);
+        $data = json_decode($str_data,true);
+        Tools::logm('starting import from Poche');
+
+
+        $sequence = '';
+        if (STORAGE == 'postgres') {
+            $sequence = 'entries_id_seq';
+        }
+
+        $count = 0;
+        foreach ($data as $value) {
+
+            $url = new Url(base64_encode($value['url']));
+            $favorite = ($value['is_fav'] == -1);
+            $archive = ($value['is_read'] == -1);
+    
             # we can add the url
             if (!is_null($url) && $url->isCorrect()) {
+                
                 $this->action('add', $url, 0, TRUE);
+                
                 $count++;
                 if ($favorite) {
                     $last_id = $this->store->getLastId($sequence);
@@ -482,9 +1035,10 @@ class Poche
                     $this->action('toggle_archive', $url, $last_id, TRUE);
                 }
             }
+            
         }
-        $this->messages->add('s', _('import from Readability completed. ' . $count . ' new links.'));
-        Tools::logm('import from Readability completed');
+        $this->messages->add('s', _('import from Poche completed. ' . $count . ' new links.'));
+        Tools::logm('import from Poche completed');
         Tools::redirect();
     }
 
@@ -499,7 +1053,8 @@ class Poche
         $providers = array(
             'pocket' => 'importFromPocket',
             'readability' => 'importFromReadability',
-            'instapaper' => 'importFromInstapaper'
+            'instapaper' => 'importFromInstapaper',
+            'poche' => 'importFromPoche',
         );
         
         if (! isset($providers[$from])) {
@@ -549,9 +1104,80 @@ class Poche
         if (file_exists($cache_file) && (filemtime($cache_file) > (time() - 86400 ))) {
            $version = file_get_contents($cache_file);
         } else {
-           $version = file_get_contents('http://static.inthepoche.com/versions/' . $which);
+           $version = file_get_contents('http://static.wallabag.org/versions/' . $which);
            file_put_contents($cache_file, $version, LOCK_EX);
         }
         return $version;
+    }
+
+    public function generateToken()
+    {
+        if (ini_get('open_basedir') === '') {
+            $token = substr(base64_encode(file_get_contents('/dev/urandom', false, null, 0, 20)), 0, 15);
+        }
+        else {
+            $token = substr(base64_encode(uniqid(mt_rand(), true)), 0, 20);
+        }
+
+        $token = str_replace('+', '', $token);
+        $this->store->updateUserConfig($this->user->getId(), 'token', $token);
+        $currentConfig = $_SESSION['poche_user']->config;
+        $currentConfig['token'] = $token;
+        $_SESSION['poche_user']->setConfig($currentConfig);
+    }
+
+    public function generateFeeds($token, $user_id, $tag_id, $type = 'home')
+    {
+        $allowed_types = array('home', 'fav', 'archive', 'tag');
+        $config = $this->store->getConfigUser($user_id);
+
+        if (!in_array($type, $allowed_types) ||
+            $token != $config['token']) {
+            die(_('Uh, there is a problem while generating feeds.'));
+        }
+        // Check the token
+
+        $feed = new FeedWriter(RSS2);
+        $feed->setTitle('wallabag — ' . $type . ' feed');
+        $feed->setLink(Tools::getPocheUrl());
+        $feed->setChannelElement('updated', date(DATE_RSS , time()));
+        $feed->setChannelElement('author', 'wallabag');
+
+        if ($type == 'tag') {
+            $entries = $this->store->retrieveEntriesByTag($tag_id, $user_id);
+        }
+        else {
+            $entries = $this->store->getEntriesByView($type, $user_id);
+        }
+
+        if (count($entries) > 0) {
+            foreach ($entries as $entry) {
+                $newItem = $feed->createNewItem();
+                $newItem->setTitle($entry['title']);
+                $newItem->setLink(Tools::getPocheUrl() . '?view=view&amp;id=' . $entry['id']);
+                $newItem->setDate(time());
+                $newItem->setDescription($entry['content']);
+                $feed->addItem($newItem);
+            }
+        }
+
+        $feed->genarateFeed();
+        exit;
+    }
+
+    public function emptyCache() {
+        $files = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(CACHE, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        foreach ($files as $fileinfo) {
+            $todo = ($fileinfo->isDir() ? 'rmdir' : 'unlink');
+            $todo($fileinfo->getRealPath());
+        }
+
+        Tools::logm('empty cache');
+        $this->messages->add('s', _('Cache deleted.'));
+        Tools::redirect();
     }
 }
